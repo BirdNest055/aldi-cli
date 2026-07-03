@@ -46,8 +46,9 @@ jobs:
         run: |
           git config user.name  "aldi-bot"
           git config user.email "aldi-bot@users.noreply.github.com"
+          # aldi.db is tracked; aldi.log is gitignored (force-add to keep history)
           [ -f aldi.db ]  && git add aldi.db
-          [ -f aldi.log ] && git add aldi.log
+          [ -f aldi.log ] && git add -f aldi.log
           if git diff --cached --quiet; then
             echo "No changes — week already in DB."
           else
