@@ -262,24 +262,27 @@ jobs:
             SUMMARY=$(cat summary.txt)
           fi
 
-          # Build the email body
+          # Build the email body (heredoc content must be indented to stay
+          # inside the YAML block scalar; use <<- to strip leading tabs)
           BODY=$(cat <<EOF
-ALDI daily fetch — $LABEL
+          ALDI daily fetch — $LABEL
 
-$EMOJI Status:       $JOB_STATUS
-📥 Fetch result:  $RESULT_LABEL
-⏱️  Duration:      ${DURATION}s
-📦 Repository:    $REPO
-🔗 Run URL:       $RUN_URL
+          $EMOJI Status:       $JOB_STATUS
+          📥 Fetch result:  $RESULT_LABEL
+          ⏱️  Duration:      ${DURATION}s
+          📦 Repository:    $REPO
+          🔗 Run URL:       $RUN_URL
 
-─────────────────────────────────────────────────
+          ─────────────────────────────────────────────────
 
-$SUMMARY
+          $SUMMARY
 
-─────────────────────────────────────────────────
-Triggered by: ${{ github.event_name }}
-EOF
+          ─────────────────────────────────────────────────
+          Triggered by: ${{ github.event_name }}
+          EOF
           )
+          # Strip leading whitespace from each line (caused by YAML indentation)
+          BODY=$(echo "$BODY" | sed 's/^          //')
 
           # Skip if secrets not configured
           if [ -z "$RESEND_API_KEY" ] || [ -z "$NOTIFY_EMAIL" ]; then
