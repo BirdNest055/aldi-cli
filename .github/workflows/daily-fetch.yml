@@ -11,8 +11,8 @@ name: Daily ALDI fetch
 #   '0 6,18 * * *' → twice daily (06:00 and 18:00 UTC)
 #
 # EMAIL NOTIFICATIONS (optional):
-#   To get an email every time this runs (with duration + result), set
-#   two repository secrets:
+#   To get an email every time this runs (with duration + result + DB summary),
+#   set two repository secrets:
 #     1. RESEND_API_KEY  — get one free at https://resend.com (100 emails/day free)
 #     2. NOTIFY_EMAIL    — the email address to send notifications to
 #   If either secret is missing, the email step is skipped silently.
@@ -75,6 +75,153 @@ jobs:
             git push
           fi
 
+      - name: Generate DB summary
+        id: summary
+        if: always()
+        run: |
+          python3 << 'PYEOF' > summary.txt
+          import sqlite3, os, sys
+          from datetime import datetime
+
+          db_path = "aldi.db"
+          if not os.path.exists(db_path):
+              print("(no database found)")
+              sys.exit(0)
+
+          conn = sqlite3.connect(db_path)
+          conn.row_factory = sqlite3.Row
+
+          # Totals
+          n_pubs = conn.execute("SELECT COUNT(*) FROM publications").fetchone()[0]
+          n_products = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+          n_offerings = conn.execute("SELECT COUNT(*) FROM product_offerings").fetchone()[0]
+
+          print("📊 DATABASE SUMMARY")
+          print("─" * 50)
+          print(f"Publications tracked:   {n_pubs}")
+          print(f"Unique products:        {n_products}")
+          print(f"Total offerings:        {n_offerings}")
+          print()
+
+          if n_pubs == 0:
+              print("(no publications in DB yet)")
+              conn.close()
+              sys.exit(0)
+
+          # Latest publication
+          latest = conn.execute("""
+              SELECT p.id, p.slug, p.original_title, p.fetched_at, p.valid_for,
+                     p.num_pages,
+                     (SELECT COUNT(*) FROM product_offerings WHERE publication_id=p.id) AS n_off
+              FROM publications p
+              ORDER BY p.fetched_at DESC
+              LIMIT 1
+          """).fetchone()
+
+          print("📅 LATEST PUBLICATION")
+          print("─" * 50)
+          print(f"{latest['original_title'] or latest['slug']}  (fetched {latest['fetched_at'][:10]})")
+          print(f"  Offerings:    {latest['n_off']}")
+          print(f"  Pages:        {latest['num_pages'] or '-'}")
+
+          # Price stats for latest pub
+          ps = conn.execute("""
+              SELECT COUNT(*) n, MIN(price_numeric) lo, MAX(price_numeric) hi, AVG(price_numeric) avg
+              FROM product_offerings WHERE publication_id=? AND price_numeric IS NOT NULL
+          """, (latest['id'],)).fetchone()
+          if ps and ps['n']:
+              print(f"  Price range:  {ps['lo']:.2f} € – {ps['hi']:.2f} €")
+              print(f"  Avg price:    {ps['avg']:.2f} €")
+          else:
+              print("  Price range:  (no prices)")
+          print()
+
+          # Top categories in latest pub
+          cats = conn.execute("""
+              SELECT product_type, COUNT(*) c
+              FROM product_offerings
+              WHERE publication_id=? AND product_type IS NOT NULL AND product_type != ''
+              GROUP BY product_type
+              ORDER BY c DESC
+              LIMIT 5
+          """, (latest['id'],)).fetchall()
+          if cats:
+              print("🏷️  TOP CATEGORIES (latest week)")
+              print("─" * 50)
+              for c in cats:
+                  print(f"  {c['c']:>3}  {c['product_type']}")
+              print()
+
+          # Changes vs previous publication (if 2+ pubs exist)
+          if n_pubs >= 2:
+              prev = conn.execute("""
+                  SELECT id, original_title, slug
+                  FROM publications
+                  WHERE id != ?
+                  ORDER BY fetched_at DESC
+                  LIMIT 1
+              """, (latest['id'],)).fetchone()
+
+              if prev:
+                  # Get product keys for both pubs
+                  latest_keys = set(r[0] for r in conn.execute("""
+                      SELECT pr.product_key FROM product_offerings o
+                      JOIN products pr ON pr.id = o.product_id
+                      WHERE o.publication_id=?
+                  """, (latest['id'],)).fetchall())
+                  prev_keys = set(r[0] for r in conn.execute("""
+                      SELECT pr.product_key FROM product_offerings o
+                      JOIN products pr ON pr.id = o.product_id
+                      WHERE o.publication_id=?
+                  """, (prev['id'],)).fetchall())
+
+                  added = latest_keys - prev_keys
+                  removed = prev_keys - latest_keys
+                  common = latest_keys & prev_keys
+
+                  # Price changes among common products
+                  price_changes = 0
+                  for key in common:
+                      l = conn.execute("""
+                          SELECT MIN(o.price_numeric) FROM product_offerings o
+                          JOIN products pr ON pr.id = o.product_id
+                          WHERE o.publication_id=? AND pr.product_key=?
+                      """, (latest['id'], key)).fetchone()[0]
+                      p = conn.execute("""
+                          SELECT MIN(o.price_numeric) FROM product_offerings o
+                          JOIN products pr ON pr.id = o.product_id
+                          WHERE o.publication_id=? AND pr.product_key=?
+                      """, (prev['id'], key)).fetchone()[0]
+                      if l is not None and p is not None and abs(l - p) > 0.001:
+                          price_changes += 1
+
+                  print(f"🔄 CHANGES VS PREVIOUS WEEK ({prev['original_title'] or prev['slug']})")
+                  print("─" * 50)
+                  print(f"  Added:         {len(added)}")
+                  print(f"  Removed:       {len(removed)}")
+                  print(f"  Price changes: {price_changes}")
+                  print()
+
+                  # List a few added products by name
+                  if added:
+                      added_names = conn.execute("""
+                          SELECT DISTINCT pr.canonical_title
+                          FROM product_offerings o
+                          JOIN products pr ON pr.id = o.product_id
+                          WHERE o.publication_id=? AND pr.product_key IN (%s)
+                          LIMIT 5
+                      """ % ",".join("?" * len(added)), (latest['id'],) + tuple(added)).fetchall()
+                      if added_names:
+                          print("  New products this week:")
+                          for n in added_names:
+                              print(f"    + {n[0]}")
+                          print()
+
+          conn.close()
+          PYEOF
+          echo "Summary written to summary.txt:"
+          cat summary.txt
+
       - name: Send email notification
         if: always()   # runs even if the fetch step failed
         env:
@@ -108,18 +255,30 @@ jobs:
           esac
 
           SUBJECT="ALDI fetch $LABEL: $RESULT_LABEL (${DURATION}s)"
+
+          # Read the summary file (generated by the previous step)
+          SUMMARY=""
+          if [ -f summary.txt ]; then
+            SUMMARY=$(cat summary.txt)
+          fi
+
+          # Build the email body
           BODY=$(cat <<EOF
-          ALDI daily fetch — $LABEL
+ALDI daily fetch — $LABEL
 
-          $EMOJI Status:       $JOB_STATUS
-          📥 Fetch result:  $RESULT_LABEL
-          ⏱️  Duration:      ${DURATION}s
-          📦 Repository:    $REPO
-          🔗 Run URL:       $RUN_URL
+$EMOJI Status:       $JOB_STATUS
+📥 Fetch result:  $RESULT_LABEL
+⏱️  Duration:      ${DURATION}s
+📦 Repository:    $REPO
+🔗 Run URL:       $RUN_URL
 
-          ---
-          Triggered by: ${{ github.event_name }}
-          EOF
+─────────────────────────────────────────────────
+
+$SUMMARY
+
+─────────────────────────────────────────────────
+Triggered by: ${{ github.event_name }}
+EOF
           )
 
           # Skip if secrets not configured
