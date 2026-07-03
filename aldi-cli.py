@@ -225,7 +225,10 @@ CREATE TABLE IF NOT EXISTS publications (
     pdf_url           TEXT,
     num_pages         INTEGER,
     description       TEXT,
-    valid_for         TEXT,
+    valid_for         TEXT,                          -- raw description (kept for compatibility)
+    valid_dates       TEXT,                          -- parsed: "29.06.2026 – 04.07.2026"
+    valid_date_start  TEXT,                          -- ISO: "2026-06-29"
+    valid_date_end    TEXT,                          -- ISO: "2026-07-04"
     customer_name     TEXT,
     cache_token       TEXT,
     fetched_at        TEXT    NOT NULL,              -- ISO-8601 UTC
@@ -502,6 +505,38 @@ def parse_price(p: Any) -> float | None:
         return None
 
 
+def parse_valid_dates(description: str) -> tuple[str, str, str]:
+    """Extract the validity date range from ALDI's description string.
+
+    The description looks like:
+        "Entdecke den Prospekt... Aktuelle Angebote für: Montag 29.06.2026 I
+         Donnerstag 02.07.2026 I Freitag 03.07.2026 I Samstag 04.07.2026"
+
+    Returns (valid_dates_pretty, iso_start, iso_end) e.g.:
+        ("29.06. – 04.07.2026", "2026-06-29", "2026-07-04")
+
+    If parsing fails, returns ("", "", "").
+    """
+    if not description:
+        return "", "", ""
+    # Find all DD.MM.YYYY dates in the description
+    dates = re.findall(r"(\d{1,2})\.(\d{1,2})\.(\d{4})", description)
+    if not dates:
+        return "", "", ""
+    # Convert to (day, month, year) ints + ISO strings
+    iso_dates = []
+    for d, m, y in dates:
+        iso_dates.append((f"{y}-{int(m):02d}-{int(d):02d}", int(d), int(m), int(y)))
+    if not iso_dates:
+        return "", "", ""
+    iso_dates.sort(key=lambda x: x[0])
+    first_iso, first_d, first_m, first_y = iso_dates[0]
+    last_iso, last_d, last_m, last_y = iso_dates[-1]
+    # Pretty range: "29.06. – 04.07.2026" (year only at the end)
+    pretty = f"{first_d:02d}.{first_m:02d}. – {last_d:02d}.{last_m:02d}.{last_y}"
+    return pretty, first_iso, last_iso
+
+
 def spreads_list(num_pages: int) -> list[str]:
     """Reproduce the Publitas spread layout: page 1 alone, then 2-3, 4-5, ..."""
     if num_pages < 1:
@@ -569,6 +604,7 @@ def fetch_publication(url: str, db_path: str, with_images: bool = False,
     n_hotspots = 0
     n_offerings = 0
     n_new_products = 0
+    valid_pretty, valid_start, valid_end = parse_valid_dates(description)
     try:
         with conn:  # atomic transaction
             # Upsert publication
@@ -577,19 +613,24 @@ def fetch_publication(url: str, db_path: str, with_images: bool = False,
                 INSERT INTO publications
                   (id, slug, group_id, title, original_title, language,
                    canonical_url, pdf_url, num_pages, description, valid_for,
+                   valid_dates, valid_date_start, valid_date_end,
                    customer_name, cache_token, fetched_at, raw_config)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
                   slug=excluded.slug, group_id=excluded.group_id,
                   title=excluded.title, original_title=excluded.original_title,
                   language=excluded.language, canonical_url=excluded.canonical_url,
                   pdf_url=excluded.pdf_url, num_pages=excluded.num_pages,
                   description=excluded.description, valid_for=excluded.valid_for,
+                  valid_dates=excluded.valid_dates,
+                  valid_date_start=excluded.valid_date_start,
+                  valid_date_end=excluded.valid_date_end,
                   customer_name=excluded.customer_name, cache_token=excluded.cache_token,
                   fetched_at=excluded.fetched_at, raw_config=excluded.raw_config
                 """,
                 (pub_id, parsed.slug, group_id, title, original_title, language,
                  canonical, pdf_url, num_pages, description, valid_for,
+                 valid_pretty, valid_start, valid_end,
                  customer_name, cache_token, now_iso,
                  json.dumps(cfg, ensure_ascii=False)),
             )

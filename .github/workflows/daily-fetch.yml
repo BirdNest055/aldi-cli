@@ -108,19 +108,39 @@ jobs:
               conn.close()
               sys.exit(0)
 
+          # All publications with date ranges (oldest first)
+          all_pubs = conn.execute("""
+              SELECT id, slug, original_title, valid_dates, valid_date_start, valid_date_end, fetched_at,
+                     (SELECT COUNT(*) FROM product_offerings WHERE publication_id=p.id) AS n_off
+              FROM publications p
+              ORDER BY p.valid_date_start ASC, p.fetched_at ASC
+          """).fetchall()
+          print("📆 ALL PUBLICATIONS")
+          print("─" * 50)
+          for p in all_pubs:
+              label = p['valid_dates'] or p['original_title'] or p['slug']
+              print(f"  {label:25s}  {p['n_off']:>4} offerings")
+          print()
+
           # Latest publication
           latest = conn.execute("""
               SELECT p.id, p.slug, p.original_title, p.fetched_at, p.valid_for,
+                     p.valid_dates, p.valid_date_start, p.valid_date_end,
                      p.num_pages,
                      (SELECT COUNT(*) FROM product_offerings WHERE publication_id=p.id) AS n_off
               FROM publications p
-              ORDER BY p.fetched_at DESC
+              ORDER BY p.valid_date_start DESC, p.fetched_at DESC
               LIMIT 1
           """).fetchone()
 
           print("📅 LATEST PUBLICATION")
           print("─" * 50)
-          print(f"{latest['original_title'] or latest['slug']}  (fetched {latest['fetched_at'][:10]})")
+          print(f"{latest['original_title'] or latest['slug']}")
+          if latest['valid_dates']:
+              print(f"  Valid:        {latest['valid_dates']}")
+          else:
+              print(f"  Valid:        (unknown)")
+          print(f"  Fetched:      {latest['fetched_at'][:10]}")
           print(f"  Offerings:    {latest['n_off']}")
           print(f"  Pages:        {latest['num_pages'] or '-'}")
 
@@ -155,10 +175,10 @@ jobs:
           # Changes vs previous publication (if 2+ pubs exist)
           if n_pubs >= 2:
               prev = conn.execute("""
-                  SELECT id, original_title, slug
+                  SELECT id, original_title, slug, valid_dates
                   FROM publications
                   WHERE id != ?
-                  ORDER BY fetched_at DESC
+                  ORDER BY valid_date_start DESC, fetched_at DESC
                   LIMIT 1
               """, (latest['id'],)).fetchone()
 
@@ -195,7 +215,9 @@ jobs:
                       if l is not None and p is not None and abs(l - p) > 0.001:
                           price_changes += 1
 
-                  print(f"🔄 CHANGES VS PREVIOUS WEEK ({prev['original_title'] or prev['slug']})")
+                  prev_label = prev['valid_dates'] or prev['original_title'] or prev['slug']
+                  latest_label = latest['valid_dates'] or latest['original_title'] or latest['slug']
+                  print(f"🔄 CHANGES: {prev_label}  →  {latest_label}")
                   print("─" * 50)
                   print(f"  Added:         {len(added)}")
                   print(f"  Removed:       {len(removed)}")
