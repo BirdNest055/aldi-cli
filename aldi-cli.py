@@ -455,8 +455,11 @@ def open_db(path: str) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     migrate_legacy_schema(conn)
-    conn.executescript(SCHEMA)
+    # Add missing columns BEFORE running the schema script, because the
+    # CREATE VIEW statements in SCHEMA reference the new columns and will
+    # fail if they don't exist yet on an older DB.
     add_missing_columns(conn)
+    conn.executescript(SCHEMA)
     return conn
 
 
