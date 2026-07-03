@@ -9,6 +9,13 @@ name: Daily ALDI fetch
 #   '0 12 * * *'  → 12:00 UTC daily
 #   '30 13 * * *' → 13:30 UTC daily
 #   '0 6,18 * * *' → twice daily (06:00 and 18:00 UTC)
+#
+# EMAIL NOTIFICATIONS (optional):
+#   To get an email every time this runs (with duration + result), set
+#   two repository secrets:
+#     1. RESEND_API_KEY  — get one free at https://resend.com (100 emails/day free)
+#     2. NOTIFY_EMAIL    — the email address to send notifications to
+#   If either secret is missing, the email step is skipped silently.
 
 on:
   schedule:
@@ -24,6 +31,10 @@ jobs:
     timeout-minutes: 5   # the actual fetch takes ~30s; 5min is a safe ceiling
 
     steps:
+      - name: Record start time
+        id: timer
+        run: echo "start=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -35,14 +46,22 @@ jobs:
       - name: Install dependency
         run: pip install -r requirements.txt
 
-      - name: Run auto-fetch (no jitter — the cron schedule handles timing)
+      - name: Run auto-fetch
+        id: fetch
+        continue-on-error: true   # we want the email to send even on failure
         run: |
-          python aldi-cli.py \
-            --db aldi.db \
-            auto-fetch \
-            --log-file aldi.log
+          set +e
+          output=$(python aldi-cli.py --db aldi.db auto-fetch --log-file aldi.log 2>&1)
+          exit_code=$?
+          echo "$output"
+          # The CLI prints the status on the last line: fetched | skipped-existing | error
+          last_line=$(echo "$output" | tail -1 | tr -d '[:space:]')
+          echo "result=$last_line" >> "$GITHUB_OUTPUT"
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          exit $exit_code
 
       - name: Commit updated DB + log
+        if: steps.fetch.outputs.exit_code == '0'
         run: |
           git config user.name  "aldi-bot"
           git config user.email "aldi-bot@users.noreply.github.com"
@@ -54,4 +73,84 @@ jobs:
           else
             git commit -m "auto: fetched new week $(date -u +%Y-%m-%d)"
             git push
+          fi
+
+      - name: Send email notification
+        if: always()   # runs even if the fetch step failed
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+          JOB_STATUS: ${{ job.status }}
+          FETCH_RESULT: ${{ steps.fetch.outputs.result }}
+          START_TIME: ${{ steps.timer.outputs.start }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Compute duration
+          END_TIME=$(date +%s)
+          DURATION=$((END_TIME - START_TIME))
+
+          # Determine status emoji + label
+          case "$JOB_STATUS" in
+            success) EMOJI="✅"; LABEL="succeeded" ;;
+            failure) EMOJI="❌"; LABEL="FAILED" ;;
+            cancelled) EMOJI="⚪"; LABEL="cancelled" ;;
+            *) EMOJI="❓"; LABEL="$JOB_STATUS" ;;
+          esac
+
+          # Determine fetch result label
+          case "$FETCH_RESULT" in
+            fetched)          RESULT_LABEL="📥 Fetched new week" ;;
+            skipped-existing) RESULT_LABEL="⏭️  Skipped (week already in DB)" ;;
+            error)            RESULT_LABEL="⚠️ Error during fetch" ;;
+            "")               RESULT_LABEL="(no result — fetch step may have failed)" ;;
+            *)                RESULT_LABEL="$FETCH_RESULT" ;;
+          esac
+
+          SUBJECT="ALDI fetch $LABEL: $RESULT_LABEL (${DURATION}s)"
+          BODY=$(cat <<EOF
+          ALDI daily fetch — $LABEL
+
+          $EMOJI Status:       $JOB_STATUS
+          📥 Fetch result:  $RESULT_LABEL
+          ⏱️  Duration:      ${DURATION}s
+          📦 Repository:    $REPO
+          🔗 Run URL:       $RUN_URL
+
+          ---
+          Triggered by: ${{ github.event_name }}
+          EOF
+          )
+
+          # Skip if secrets not configured
+          if [ -z "$RESEND_API_KEY" ] || [ -z "$NOTIFY_EMAIL" ]; then
+            echo "📧 Email skipped — RESEND_API_KEY or NOTIFY_EMAIL secret not set."
+            echo "   To enable: add both secrets in repo Settings → Secrets and variables → Actions"
+            exit 0
+          fi
+
+          echo "📧 Sending email to $NOTIFY_EMAIL..."
+          echo "   Subject: $SUBJECT"
+
+          # Send via Resend API (free, 100/day)
+          # Resend's free plan sends from onboarding@resend.dev to your verified email.
+          JSON_BODY=$(jq -n \
+            --arg from "onboarding@resend.dev" \
+            --arg to "$NOTIFY_EMAIL" \
+            --arg subject "$SUBJECT" \
+            --arg body "$BODY" \
+            '{from: $from, to: [$to], subject: $subject, text: $body}')
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST 'https://api.resend.com/emails' \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H 'Content-Type: application/json' \
+            -d "$JSON_BODY")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          RESP_BODY=$(echo "$RESPONSE" | head -n -1)
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "   ✅ Email sent successfully."
+          else
+            echo "   ❌ Email failed (HTTP $HTTP_CODE): $RESP_BODY"
           fi
