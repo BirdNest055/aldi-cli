@@ -300,11 +300,15 @@ CREATE TABLE IF NOT EXISTS product_offerings (
     product_id_remote INTEGER NOT NULL,              -- Publitas' per-week id (NOT stable)
     title             TEXT,                          -- title AS SEEN in this publication
     description       TEXT,                          -- description AS SEEN in this publication
-    price             TEXT,                          -- raw price string
-    price_numeric     REAL,                          -- parsed float (NULL if unparseable)
+    brand             TEXT,                          -- brand AS SEEN (e.g. "RIO D'ORO", "MILSANI")
+    price             TEXT,                          -- raw regular price string
+    price_numeric     REAL,                          -- parsed regular price (NULL if unparseable)
+    discounted_price  TEXT,                          -- raw sale price string (if on sale)
+    discounted_price_numeric REAL,                   -- parsed sale price
     currency          TEXT DEFAULT 'EUR',
     product_type      TEXT,
     webshop_identifier TEXT,                         -- per-week, e.g. "999222_kw27"
+    webshop_url       TEXT,                          -- per-week URL (recipes, webshop links)
     spread            TEXT,
     page_range        TEXT,
     raw               TEXT,                          -- full JSON of this product entry
@@ -318,6 +322,7 @@ CREATE INDEX IF NOT EXISTS idx_offerings_pub     ON product_offerings(publicatio
 CREATE INDEX IF NOT EXISTS idx_offerings_product ON product_offerings(product_id);
 CREATE INDEX IF NOT EXISTS idx_offerings_price   ON product_offerings(price_numeric);
 CREATE INDEX IF NOT EXISTS idx_offerings_type    ON product_offerings(product_type);
+CREATE INDEX IF NOT EXISTS idx_offerings_brand   ON product_offerings(brand);
 
 CREATE TABLE IF NOT EXISTS product_photos (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -363,6 +368,19 @@ CREATE TABLE IF NOT EXISTS product_descriptions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_descs_product ON product_descriptions(product_id);
+
+CREATE TABLE IF NOT EXISTS product_brands (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id        INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    brand             TEXT    NOT NULL,
+    first_seen_pub_id INTEGER NOT NULL REFERENCES publications(id) ON DELETE CASCADE,
+    last_seen_pub_id  INTEGER NOT NULL REFERENCES publications(id) ON DELETE CASCADE,
+    first_seen_at     TEXT    NOT NULL,
+    last_seen_at      TEXT    NOT NULL,
+    UNIQUE(product_id, brand)
+);
+
+CREATE INDEX IF NOT EXISTS idx_brands_product ON product_brands(product_id);
 
 -- === VIEWS =============================================================== --
 
@@ -695,15 +713,26 @@ def fetch_publication(url: str, db_path: str, with_images: bool = False,
                             n_new_products += 1
 
                         # Insert offering (observation layer)
+                        p_brand = prod.get("brand", "") or ""
+                        p_disc_raw = prod.get("discountedPrice", "")
+                        p_disc_num = parse_price(p_disc_raw) if p_disc_raw else None
+                        p_webshop_url = prod.get("webshopUrl", "") or ""
                         cur3 = conn.execute(
                             """INSERT INTO product_offerings
                               (product_id, publication_id, hotspot_id, product_id_remote,
-                               title, description, price, price_numeric, currency,
-                               product_type, webshop_identifier, spread, page_range, raw)
-                              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                               title, description, brand,
+                               price, price_numeric,
+                               discounted_price, discounted_price_numeric,
+                               currency, product_type,
+                               webshop_identifier, webshop_url,
+                               spread, page_range, raw)
+                              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                             (pid, pub_id, hid, prod.get("id"),
-                             p_title, p_desc, p_price_raw, p_price_num, "EUR",
-                             p_type, prod.get("webshopIdentifier", ""),
+                             p_title, p_desc, p_brand,
+                             p_price_raw, p_price_num,
+                             p_disc_raw if p_disc_raw else "", p_disc_num,
+                             "EUR", p_type,
+                             prod.get("webshopIdentifier", ""), p_webshop_url,
                              spread, spread,
                              json.dumps(prod, ensure_ascii=False)),
                         )
@@ -717,6 +746,10 @@ def fetch_publication(url: str, db_path: str, with_images: bool = False,
                         if p_desc:
                             _scd2_upsert(conn, "product_descriptions", pid, pub_id,
                                          now_iso, "description", p_desc)
+                        # SCD Type 2: brands (only when non-empty)
+                        if p_brand:
+                            _scd2_upsert(conn, "product_brands", pid, pub_id,
+                                         now_iso, "brand", p_brand)
 
                         # Photos
                         for ph in prod.get("photoUrls", []) or []:
