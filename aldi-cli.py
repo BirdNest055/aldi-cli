@@ -478,23 +478,14 @@ def add_missing_columns(conn: sqlite3.Connection) -> None:
     for table, column, ddl in new_columns:
         cols = conn.execute(f"PRAGMA table_info({table})").fetchall()
         if not cols:
-            print(f"[migrate] table {table} does not exist yet — skipping", file=sys.stderr)
-            continue
+            continue  # table doesn't exist yet (CREATE TABLE will handle it)
         existing = {c[1] for c in cols}
         if column not in existing:
             try:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
-                print(f"[migrate] added column {table}.{column}", file=sys.stderr)
-            except sqlite3.OperationalError as e:
-                print(f"[migrate] could not add {table}.{column}: {e}", file=sys.stderr)
+            except sqlite3.OperationalError:
+                pass  # column may have been added by a concurrent call
     conn.commit()
-    # Verify
-    for table, column, _ in new_columns:
-        cols = conn.execute(f"PRAGMA table_info({table})").fetchall()
-        if cols:
-            existing = {c[1] for c in cols}
-            if column not in existing:
-                print(f"[migrate] WARNING: {table}.{column} still missing after migration!", file=sys.stderr)
 
 
 def migrate_legacy_schema(conn: sqlite3.Connection) -> None:
