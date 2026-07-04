@@ -62,7 +62,7 @@ jobs:
           import sys, os
           sys.path.insert(0, '.')
           from error_handler import (
-              AldiError, NetworkError, ParseError, StorageError,
+              DiscountFetcherError, NetworkError, ParseError, StorageError,
               ConfigurationError, RunState, load_state, save_state,
               update_state_for_success, update_state_for_skip, update_state_for_error,
               format_error_report, retry_network,
