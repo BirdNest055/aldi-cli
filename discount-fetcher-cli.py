@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-aldi-cli — Fetch and extract product data from ALDI SÜD prospectus pages
+discount-fetcher-cli — Fetch and extract product data from supermarket prospectus pages
            (hosted on Publitas) into an atomic, DB-friendly SQLite store
            designed for TIMELINE ANALYSIS across weekly publications.
 
@@ -42,32 +42,32 @@ This lets you answer:
 
 USAGE
 -----
-    aldi-cli.py fetch <url> [--db PATH] [--with-images]
-    aldi-cli.py list [--db PATH]
-    aldi-cli.py show   <pub-id-or-slug> [--db PATH]
-    aldi-cli.py products <pub-id-or-slug> [--db PATH] [--category TXT]
+    discount-fetcher-cli.py fetch <url> [--db PATH] [--with-images]
+    discount-fetcher-cli.py list [--db PATH]
+    discount-fetcher-cli.py show   <pub-id-or-slug> [--db PATH]
+    discount-fetcher-cli.py products <pub-id-or-slug> [--db PATH] [--category TXT]
                           [--max-price N] [--min-price N] [--search TXT]
                           [--json] [--csv]
-    aldi-cli.py price-history <product-key-or-title> [--db PATH] [--json]
-    aldi-cli.py export <pub-id-or-slug> [--db PATH] [--format json|csv] [-o FILE]
-    aldi-cli.py download-images <pub-id-or-slug> [--db PATH] [--out DIR]
+    discount-fetcher-cli.py price-history <product-key-or-title> [--db PATH] [--json]
+    discount-fetcher-cli.py export <pub-id-or-slug> [--db PATH] [--format json|csv] [-o FILE]
+    discount-fetcher-cli.py download-images <pub-id-or-slug> [--db PATH] [--out DIR]
                                 [--quality at2400|at600|...]
 
 AUTOMATION
 ----------
-    aldi-cli.py auto-fetch [--url URL] [--jitter 12-18] [--log-file FILE]
+    discount-fetcher-cli.py auto-fetch [--url URL] [--jitter 12-18] [--log-file FILE]
                             [--dry-run] [--with-images]
         One-shot: discover the current week's prospectus URL (via redirect
         from https://prospekt.aldi-sued.de/), check if its publication_id
         is already in the DB, fetch if missing, exit.
 
-    aldi-cli.py daemon [--url URL] [--hours 12-18] [--log-file FILE]
+    discount-fetcher-cli.py daemon [--url URL] [--hours 12-18] [--log-file FILE]
                        [--dry-run] [--with-images]
         Long-running: each day, pick a random time within the hours window,
         sleep until then, run the auto-fetch logic, repeat forever.
 
-    aldi-cli.py install-cron   [--url URL] [--hours 12-18]
-    aldi-cli.py install-systemd [--url URL] [--hours 12-18] [-o FILE]
+    discount-fetcher-cli.py install-cron   [--url URL] [--hours 12-18]
+    discount-fetcher-cli.py install-systemd [--url URL] [--hours 12-18] [-o FILE]
         Generate a crontab line / systemd unit that runs auto-fetch daily.
 
 URL pattern supported:
@@ -99,7 +99,7 @@ import requests
 
 # Error handling — typed exceptions, circuit breaker, retry, state file
 from error_handler import (
-    AldiError, NetworkError, ParseError, StorageError, ConfigurationError,
+    DiscountFetcherError, NetworkError, ParseError, StorageError, ConfigurationError,
     EXIT_SUCCESS, EXIT_NETWORK, EXIT_PARSE, EXIT_STORAGE, EXIT_CONFIG,
     EXIT_UNKNOWN, EXIT_CIRCUIT_OPEN,
     MAX_CONSECUTIVE_ERRORS,
@@ -109,8 +109,8 @@ from error_handler import (
     format_error_report, error_signature_for_workflow,
 )
 
-DEFAULT_DB = os.environ.get("ALDI_DB", "/home/z/my-project/download/aldi.db")
-DEFAULT_IMG_DIR = "/home/z/my-project/download/aldi-images"
+DEFAULT_DB = os.environ.get("DISCOUNTS_DB", "/home/z/my-project/download/discounts.db")
+DEFAULT_IMG_DIR = "/home/z/my-project/download/discount-images"
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 HEADERS = {
@@ -1038,7 +1038,7 @@ def cmd_list(args):
             ORDER BY p.fetched_at DESC
         """).fetchall()
         if not rows:
-            print("(no publications yet. Run: aldi-cli.py fetch <url>)")
+            print("(no publications yet. Run: discount-fetcher-cli.py fetch <url>)")
             return
         print(f"{'ID':>10}  {'SLUG':<25} {'PAGES':>5} {'OFFER':>5} {'HOT':>5}  FETCHED_AT            TITLE")
         for r in rows:
@@ -1407,7 +1407,7 @@ def peek_publication_id(url: str) -> tuple[int, str] | None:
         html = get_html(url)
         cfg = extract_publication_config(html)
         return (cfg.get("id"), cfg.get("slug"))
-    except AldiError as e:
+    except DiscountFetcherError as e:
         _log(f"peek_publication_id: {e.category} error at {e.stage}: {e.message}")
         return None
     except Exception as e:
@@ -1497,7 +1497,7 @@ def auto_fetch_once(
        'skipped-existing'  — publication already in DB (mode=daily/force off)
        'not-due'           — current pub hasn't expired yet (mode=expiry)
        'dry-run-fetch'     — dry run, would have fetched
-       'error'             — error occurred (also raises AldiError for the
+       'error'             — error occurred (also raises DiscountFetcherError for the
                              caller to log/notify; status is set first)
 
     Modes:
@@ -1543,7 +1543,7 @@ def auto_fetch_once(
     _log("Resolving current prospectus URL...", log_file)
     try:
         current_url = discover_current_url(url)
-    except AldiError as e:
+    except DiscountFetcherError as e:
         _log(f"ERROR resolving URL [{e.category}@{e.stage}]: {e.message}", log_file)
         raise  # let caller update state + exit with proper code
 
@@ -1583,11 +1583,11 @@ def auto_fetch_once(
         _log(f"OK — fetched {result.num_offerings} offerings, "
              f"{result.num_new_products} new products", log_file)
         return "fetched"
-    except AldiError:
+    except DiscountFetcherError:
         # Already typed — just re-raise
         raise
     except Exception as e:
-        # Wrap unknown errors as a generic AldiError so the state machine
+        # Wrap unknown errors as a generic DiscountFetcherError so the state machine
         # can categorize them.
         # Try to classify based on context — fetch_publication does both
         # network + storage, but most unknowns at this stage are likely storage
@@ -1616,7 +1616,7 @@ def cmd_auto_fetch(args):
         time.sleep(max(0, sleep_s))
 
     # Load circuit-breaker state from disk (next to the DB by default)
-    state_path = os.environ.get("ALDI_STATE_FILE") or \
+    state_path = os.environ.get("DISCOUNT_FETCHER_STATE_FILE") or \
         os.path.splitext(args.db)[0] + ".state.json"
     state = load_state(state_path)
 
@@ -1626,7 +1626,7 @@ def cmd_auto_fetch(args):
             with_images=args.with_images, img_dir=args.out, dry_run=args.dry_run,
             force=args.force, mode=args.mode,
         )
-    except AldiError as e:
+    except DiscountFetcherError as e:
         # Update state + persist
         should_notify, circuit_open = update_state_for_error(state, e)
         save_state(state, state_path)
@@ -1640,8 +1640,8 @@ def cmd_auto_fetch(args):
               file=sys.stderr)
         sys.exit(e.exit_code)
     except Exception as e:
-        # Unknown non-AldiError — wrap and exit
-        err = AldiError(f"Unexpected error: {type(e).__name__}: {e}",
+        # Unknown non-DiscountFetcherError — wrap and exit
+        err = DiscountFetcherError(f"Unexpected error: {type(e).__name__}: {e}",
                         stage="cmd_auto_fetch", cause=e)
         err.exit_code = EXIT_UNKNOWN
         err.category = "unknown"
@@ -1676,7 +1676,7 @@ def cmd_daemon(args):
     _log(f"URL source: {args.url or LANDING_URL + ' (auto-discover via redirect)'}",
          args.log_file)
 
-    state_path = os.environ.get("ALDI_STATE_FILE") or \
+    state_path = os.environ.get("DISCOUNT_FETCHER_STATE_FILE") or \
         os.path.splitext(args.db)[0] + ".state.json"
     state = load_state(state_path)
 
@@ -1704,7 +1704,7 @@ def cmd_daemon(args):
             else:
                 update_state_for_success(state)
             save_state(state, state_path)
-        except AldiError as e:
+        except DiscountFetcherError as e:
             should_notify, circuit_open = update_state_for_error(state, e)
             save_state(state, state_path)
             _log(f"ERROR in daily run [{e.category}@{e.stage}]: {e.message}",
@@ -1716,7 +1716,7 @@ def cmd_daemon(args):
                      args.log_file)
                 return  # exit — systemd will restart with RestartSec=60
         except Exception as e:
-            err = AldiError(f"Unexpected: {type(e).__name__}: {e}",
+            err = DiscountFetcherError(f"Unexpected: {type(e).__name__}: {e}",
                             stage="daemon_loop", cause=e)
             err.exit_code = EXIT_UNKNOWN
             err.category = "unknown"
@@ -1739,7 +1739,7 @@ def cmd_install_cron(args):
     py = sys.executable
     db = os.path.abspath(args.db)
     log = os.path.abspath(args.log_file) if args.log_file else os.path.join(
-        os.path.dirname(db), "aldi-daemon.log"
+        os.path.dirname(db), "discount-fetcher-daemon.log"
     )
     img = os.path.abspath(args.out)
 
@@ -1752,7 +1752,7 @@ def cmd_install_cron(args):
     if args.with_images:
         cmd += " --with-images"
 
-    cron_line = f"# aldi-cli: daily prospectus fetch at random time {h_start}-{h_end}"
+    cron_line = f"# discount-fetcher-cli: daily prospectus fetch at random time {h_start}-{h_end}"
     cron_line2 = f"{0} {h_start} * * * {cmd}"
 
     print("# Add these lines to your crontab (run `crontab -e` to edit):")
@@ -1772,7 +1772,7 @@ def cmd_install_systemd(args):
     py = sys.executable
     db = os.path.abspath(args.db)
     log = os.path.abspath(args.log_file) if args.log_file else os.path.join(
-        os.path.dirname(db), "aldi-daemon.log"
+        os.path.dirname(db), "discount-fetcher-daemon.log"
     )
     img = os.path.abspath(args.out)
     h_start, h_end = parse_hour_range(args.hours)
@@ -1794,17 +1794,17 @@ RestartSec=60
 [Install]
 WantedBy=default.target
 """
-    out_path = args.output or "aldi-daemon.service"
+    out_path = args.output or "discount-fetcher-daemon.service"
     with open(out_path, "w") as f:
         f.write(unit)
     print(f"Wrote systemd unit: {out_path}")
     print()
     print("To install as a user service:")
     print(f"  mkdir -p ~/.config/systemd/user")
-    print(f"  cp {out_path} ~/.config/systemd/user/aldi-daemon.service")
+    print(f"  cp {out_path} ~/.config/systemd/user/discount-fetcher-daemon.service")
     print(f"  systemctl --user daemon-reload")
-    print(f"  systemctl --user enable --now aldi-daemon.service")
-    print(f"  journalctl --user -u aldi-daemon.service -f   # tail logs")
+    print(f"  systemctl --user enable --now discount-fetcher-daemon.service")
+    print(f"  journalctl --user -u discount-fetcher-daemon.service -f   # tail logs")
 
 
 # --------------------------------------------------------------------------- #
@@ -1813,7 +1813,7 @@ WantedBy=default.target
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="aldi-cli",
+        prog="discount-fetcher-cli",
         description=("Fetch ALDI SÜD prospectus product data into a "
                      "timeline-analysis-ready SQLite store."),
     )

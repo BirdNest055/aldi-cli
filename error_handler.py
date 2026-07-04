@@ -1,5 +1,5 @@
 """
-error_handler — Comprehensive error handling for aldi-cli.
+error_handler — Comprehensive error handling for discount-fetcher-cli.
 
 GOALS
 -----
@@ -74,7 +74,7 @@ EXIT_CIRCUIT_OPEN = 60
 # --------------------------------------------------------------------------- #
 
 
-class AldiError(Exception):
+class DiscountFetcherError(Exception):
     """Base class for all aldi-cli errors."""
 
     exit_code: int = EXIT_UNKNOWN
@@ -99,25 +99,25 @@ class AldiError(Exception):
         ).hexdigest()[:16]
 
 
-class NetworkError(AldiError):
+class NetworkError(DiscountFetcherError):
     exit_code = EXIT_NETWORK
     category = "network"
     retryable = True
 
 
-class ParseError(AldiError):
+class ParseError(DiscountFetcherError):
     exit_code = EXIT_PARSE
     category = "parse"
     retryable = False
 
 
-class StorageError(AldiError):
+class StorageError(DiscountFetcherError):
     exit_code = EXIT_STORAGE
     category = "storage"
     retryable = False
 
 
-class ConfigurationError(AldiError):
+class ConfigurationError(DiscountFetcherError):
     exit_code = EXIT_CONFIG
     category = "config"
     retryable = False
@@ -154,14 +154,14 @@ class RunState:
 
 
 def _default_state_path() -> Path:
-    env = os.environ.get("ALDI_STATE_FILE")
+    env = os.environ.get("DISCOUNT_FETCHER_STATE_FILE")
     if env:
         return Path(env)
     # Default: sit next to the DB if possible, else home dir
-    db_env = os.environ.get("ALDI_DB")
+    db_env = os.environ.get("DISCOUNTS_DB")
     if db_env:
         return Path(db_env).with_suffix(".state.json")
-    return Path.home() / ".aldi-cli-state.json"
+    return Path.home() / ".discount-fetcher-state.json"
 
 
 def load_state(path: Path | str | None = None) -> RunState:
@@ -212,7 +212,7 @@ def update_state_for_skip(state: RunState, status: str = "skipped") -> bool:
     return False  # never notify on skips
 
 
-def update_state_for_error(state: RunState, err: AldiError) -> tuple[bool, bool]:
+def update_state_for_error(state: RunState, err: DiscountFetcherError) -> tuple[bool, bool]:
     """Update state after an error.
     Returns (should_notify, circuit_open).
     - should_notify: True if email should be sent (first error, type change, or recovery context)
@@ -255,7 +255,7 @@ def retry_network(fn, *, max_attempts: int = 3,
                   stage: str = "network",
                   log_fn=print) -> Any:
     """Retry a callable on NetworkError with exponential backoff.
-    Other AldiError types are raised immediately (no retry).
+    Other DiscountFetcherError types are raised immediately (no retry).
     Default backoff: [5, 15, 45] seconds."""
     if backoff_seconds is None:
         backoff_seconds = [5, 15, 45]
@@ -273,7 +273,7 @@ def retry_network(fn, *, max_attempts: int = 3,
             log_fn(f"[retry] {stage}: network error attempt {attempt}/{max_attempts}, "
                    f"waiting {wait}s — {e.message}")
             _time.sleep(wait)
-        except AldiError:
+        except DiscountFetcherError:
             raise  # non-retryable
         except Exception as e:
             # Wrap unknown exceptions as NetworkError if they look network-y
@@ -300,7 +300,7 @@ def wrap_network(fn, *, stage: str = "network"):
     """Run fn(); wrap requests/urllib errors as NetworkError."""
     try:
         return fn()
-    except AldiError:
+    except DiscountFetcherError:
         raise
     except Exception as e:
         # requests exceptions
@@ -315,7 +315,7 @@ def wrap_parse(fn, *, stage: str = "parse"):
     """Run fn(); wrap JSON/regex/KeyError as ParseError."""
     try:
         return fn()
-    except AldiError:
+    except DiscountFetcherError:
         raise
     except (json.JSONDecodeError, KeyError, ValueError, TypeError, IndexError) as e:
         raise ParseError(f"{type(e).__name__}: {e}", stage=stage, cause=e) from e
@@ -328,7 +328,7 @@ def wrap_storage(fn, *, stage: str = "storage"):
     """Run fn(); wrap sqlite3 errors as StorageError."""
     try:
         return fn()
-    except AldiError:
+    except DiscountFetcherError:
         raise
     except Exception as e:
         if e.__class__.__module__.startswith("sqlite3"):
@@ -342,7 +342,7 @@ def wrap_storage(fn, *, stage: str = "storage"):
 # Error reporting (for logs and emails)
 # --------------------------------------------------------------------------- #
 
-def format_error_report(err: AldiError, *, include_traceback: bool = True) -> str:
+def format_error_report(err: DiscountFetcherError, *, include_traceback: bool = True) -> str:
     """Human-readable error report for logs and emails."""
     lines = [
         f"ERROR CATEGORY: {err.category}",
@@ -362,7 +362,7 @@ def format_error_report(err: AldiError, *, include_traceback: bool = True) -> st
     return "\n".join(lines)
 
 
-def error_signature_for_workflow(err: AldiError | None, status: str) -> str:
+def error_signature_for_workflow(err: DiscountFetcherError | None, status: str) -> str:
     """Stable signature for the GHA workflow's email-dedup logic.
     Returns a short string like 'success' or 'network:discover:abc12345'."""
     if status == "success" or err is None:
