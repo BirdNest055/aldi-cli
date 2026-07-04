@@ -12,7 +12,7 @@ env/
 aldi-images/
 download/
 
-# Local logs (the GitHub Actions workflow tracks its own aldi.log in-repo)
+# Local logs (the GitHub Actions workflow tracks its own discount-fetcher.log in-repo)
 *.log
 
 # IDE

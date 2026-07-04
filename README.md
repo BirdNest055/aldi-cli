@@ -1,8 +1,8 @@
-# aldi-cli
+# discount-fetcher-cli
 
-> Automatically fetches ALDI SÜD weekly prospectus data into a SQLite database — with brands, prices, sale prices, and full timeline history.
+> Automatically fetches supermarket discount prospectus data into a SQLite database — with brands, prices, sale prices, and full timeline history.
 
-[![GitHub Actions](https://img.shields.io/badge/daily%20fetch-GitHub%20Actions-blue)](https://github.com/BirdNest055/aldi-cli/actions)
+[![GitHub Actions](https://img.shields.io/badge/daily%20fetch-GitHub%20Actions-blue)](https://github.com/BirdNest055/discount-fetcher-cli/actions)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -26,37 +26,37 @@ You get an email when a new week is fetched. No email when there's nothing new (
 
 The daily workflow runs on GitHub Actions. You get an email when a new week is fetched. That's it — nothing to do.
 
-**Trigger manually:** Go to [Actions → Daily ALDI fetch → Run workflow](https://github.com/BirdNest055/aldi-cli/actions/workflows/daily-fetch.yml). You can choose:
+**Trigger manually:** Go to [Actions → Daily discount fetch → Run workflow](https://github.com/BirdNest055/discount-fetcher-cli/actions/workflows/daily-fetch.yml). You can choose:
 - **Mode:** `expiry` (default, only fetch after current week expires), `daily` (always check), `manual`
 - **Force:** bypass the expiry check (useful for testing)
 
 ### Option 2: Run it locally
 
 ```bash
-git clone https://github.com/BirdNest055/aldi-cli.git
-cd aldi-cli
+git clone https://github.com/BirdNest055/discount-fetcher-cli.git
+cd discount-fetcher-cli
 pip install -r requirements.txt
 
 # Fetch a specific week
-python aldi-cli.py fetch "https://prospekt.aldi-sued.de/kw27-26-op-mp/page/1"
+python discount-fetcher-cli.py fetch "https://prospekt.aldi-sued.de/kw27-26-op-mp/page/1"
 
 # Auto-discover and fetch the current week
-python aldi-cli.py auto-fetch --mode expiry
+python discount-fetcher-cli.py auto-fetch --mode expiry
 
 # See what's in the DB
-python aldi-cli.py list
-python aldi-cli.py show kw27-26-op-mp
+python discount-fetcher-cli.py list
+python discount-fetcher-cli.py show kw27-26-op-mp
 
 # Search products
-python aldi-cli.py products kw27-26-op-mp --search "avocado"
-python aldi-cli.py products kw27-26-op-mp --max-price 1
-python aldi-cli.py products kw27-26-op-mp --category "Eis"
+python discount-fetcher-cli.py products kw27-26-op-mp --search "avocado"
+python discount-fetcher-cli.py products kw27-26-op-mp --max-price 1
+python discount-fetcher-cli.py products kw27-26-op-mp --category "Eis"
 
 # Price history for a product
-python aldi-cli.py price-history "Avocado"
+python discount-fetcher-cli.py price-history "Avocado"
 
 # Compare two weeks
-python aldi-cli.py export kw27-26-op-mp --format csv -o kw27.csv
+python discount-fetcher-cli.py export kw27-26-op-mp --format csv -o kw27.csv
 ```
 
 ## Commands
@@ -120,7 +120,7 @@ No email when the current week is still valid (`not-due` status).
 
 ### Vercel integration
 
-When a new week is fetched and `aldi.db` is committed, the workflow calls a Vercel deploy hook that triggers the [aldi-web](https://github.com/BirdNest055/aldi-web) app to rebuild. The web app downloads the latest `aldi.db` during its build step.
+When a new week is fetched and `discounts.db` is committed, the workflow calls a Vercel deploy hook that triggers the [discount-database](https://github.com/BirdNest055/discount-database) app to rebuild. The web app downloads the latest `discounts.db` during its build step.
 
 **Secret:** `VERCEL_DEPLOY_HOOK` — the Vercel deploy hook URL
 
@@ -129,7 +129,7 @@ When a new week is fetched and `aldi.db` is committed, the workflow calls a Verc
 | Branch | Purpose |
 |---|---|
 | `main` | Production. The daily cron reads from here. Protected. |
-| `dev` | Development. Push freely, test via `dev-test.yml` workflow (uses a separate `aldi-dev.db`). |
+| `dev` | Development. Push freely, test via `dev-test.yml` workflow (uses a separate `discounts-dev.db`). |
 
 **Workflow:**
 1. Make changes on `dev`
@@ -140,16 +140,16 @@ When a new week is fetched and `aldi.db` is committed, the workflow calls a Verc
 ## Files
 
 ```
-aldi-cli/
-├── aldi-cli.py              ← the CLI (single file, ~1900 lines)
+discount-fetcher-cli/
+├── discount-fetcher-cli.py              ← the CLI (single file, ~1900 lines)
 ├── error_handler.py         ← typed exceptions, circuit breaker, retry, state
 ├── requirements.txt         ← just `requests`
 ├── .github/workflows/
 │   ├── daily-fetch.yml      ← production: daily cron + manual dispatch
 │   └── dev-test.yml         ← dev: push trigger + manual + smoke tests
-├── aldi.db                  ← the database (committed, grows ~50 KB/week)
-├── aldi.log                 ← fetch logs
-├── aldi.state.json          ← circuit-breaker state (committed for cross-run dedup)
+├── discounts.db                  ← the database (committed, grows ~50 KB/week)
+├── discount-fetcher.log                 ← fetch logs
+├── discount-fetcher.state.json          ← circuit-breaker state (committed for cross-run dedup)
 ├── LICENSE                  ← MIT
 └── README.md                ← this file
 ```
@@ -170,7 +170,7 @@ aldi-cli/
 
 ### Circuit breaker (anti-spam)
 
-State is persisted to `aldi.state.json` (next to the DB). After **3 consecutive identical errors** (same category + stage + message), the circuit opens and subsequent identical errors **suppress email notifications**. The circuit closes when:
+State is persisted to `discount-fetcher.state.json` (next to the DB). After **3 consecutive identical errors** (same category + stage + message), the circuit opens and subsequent identical errors **suppress email notifications**. The circuit closes when:
 - A different error type occurs (resets counter)
 - A run succeeds (clears state, sends recovery email)
 

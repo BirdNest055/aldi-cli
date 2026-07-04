@@ -1,7 +1,7 @@
 name: Dev test fetch
 
 # This workflow is for TESTING changes on the dev branch.
-# It uses a separate DB file (aldi-dev.db) so it never touches production data.
+# It uses a separate DB file (discounts-dev.db) so it never touches production data.
 # It only runs on manual dispatch — never on a schedule.
 #
 # When a dev-test run succeeds, merge dev → main to promote to production.
@@ -35,13 +35,13 @@ jobs:
         id: fetch
         continue-on-error: true
         env:
-          ALDI_STATE_FILE: aldi-dev.state.json
+          DISCOUNT_FETCHER_STATE_FILE: discount-fetcher-dev.state.json
         run: |
           set +e
           # Use a separate DB file so we never touch production data
           # --force ensures we exercise the full fetch path even if the
           # current week is already in the dev DB.
-          output=$(python aldi-cli.py --db aldi-dev.db auto-fetch --force --mode daily --log-file aldi-dev.log 2>&1)
+          output=$(python discount-fetcher-cli.py --db discounts-dev.db auto-fetch --force --mode daily --log-file discount-fetcher-dev.log 2>&1)
           exit_code=$?
           echo "$output"
           last_line=$(echo "$output" | tail -1 | tr -d '[:space:]')
@@ -62,7 +62,7 @@ jobs:
           import sys, os
           sys.path.insert(0, '.')
           from error_handler import (
-              AldiError, NetworkError, ParseError, StorageError,
+              DiscountFetcherError, NetworkError, ParseError, StorageError,
               ConfigurationError, RunState, load_state, save_state,
               update_state_for_success, update_state_for_skip, update_state_for_error,
               format_error_report, retry_network,
@@ -145,11 +145,11 @@ jobs:
       - name: Show dev DB stats
         if: always()
         run: |
-          if [ -f aldi-dev.db ]; then
+          if [ -f discounts-dev.db ]; then
             echo "=== Dev DB stats ==="
             python3 -c "
           import sqlite3
-          c = sqlite3.connect('aldi-dev.db')
+          c = sqlite3.connect('discounts-dev.db')
           for t in ['publications','products','product_offerings','product_brands']:
               try:
                   n = c.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
@@ -167,10 +167,10 @@ jobs:
       - name: Commit dev DB + log (to dev branch only)
         if: steps.fetch.outputs.exit_code == '0'
         run: |
-          git config user.name  "aldi-bot"
-          git config user.email "aldi-bot@users.noreply.github.com"
-          [ -f aldi-dev.db ]  && git add aldi-dev.db
-          [ -f aldi-dev.log ] && git add -f aldi-dev.log
+          git config user.name  "discount-fetcher-bot"
+          git config user.email "discount-fetcher-bot@users.noreply.github.com"
+          [ -f discounts-dev.db ]  && git add discounts-dev.db
+          [ -f discount-fetcher-dev.log ] && git add -f discount-fetcher-dev.log
           if git diff --cached --quiet; then
             echo "No changes."
           else
